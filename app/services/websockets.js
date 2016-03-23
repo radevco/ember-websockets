@@ -1,111 +1,92 @@
 import Ember from 'ember';
+import { normalizeURL, cleanURL } from 'ember-websockets/helpers';
 import WebsocketProxy from 'ember-websockets/helpers/websocket-proxy';
 
-const forEach = Array.prototype.forEach;
-const filter  = Array.prototype.filter;
-const isArray = Ember.isArray;
+const { Service, get, set } = Ember;
 
-export default Ember.Service.extend({
+export default Service.extend({
   /*
-  * Each element in the array is of the form:
-  *
-  * {
-  *    url: 'string'
-  *    socket: WebSocket Proxy object
-  * }
+    A hash of open websocket connections. This
+    allows multiple components to share the same connection.
+
+    {
+      'websocket-url': WebSocket Proxy object
+    }
   */
   sockets: null,
 
   init() {
     this._super(...arguments);
-    this.sockets = Ember.A();
+    set(this, 'sockets', {});
   },
 
   /*
-  * socketFor returns a websocket proxy object. On this object there is a property `socket`
-  * which contains the actual websocket object. This websocket object is cached based off of the url meaning
-  * multiple requests for the same socket will return the same object.
+    socketFor returns a websocket proxy object. On this object there is a property `socket`
+    which contains the actual websocket object. This websocket object is cached based off of the url meaning
+    multiple requests for the same socket will return the same object.
   */
   socketFor(url, protocols = []) {
-    var proxy = this.findSocketInCache(this.get('sockets'), url);
+    /*
+      Websockets allows either a string or array of strings to be passed as the second argument.
+      Normalize both cases into an array of strings so we can just deal with arrays.
+    */
+    if(typeof protocols === 'string') { protocols = [protocols]; }
 
-    if (proxy && this.websocketIsNotClosed(proxy.socket)) { return proxy.socket; }
+    /*
+      Normalize the url as native websockets add a / to the end of the url:
+      http://example.com:8000 becomes: http://example.com:8000/
 
-    // Websockets allows either a string or array of strings to be passed as the second argument.
-    // This normalizes both cases into one where they are all arrays of strings and if you just pass
-    // a single string it becomes an array of one.
-    if(!isArray(protocols)) { protocols = [protocols]; }
+      Since the url will be used as a key will need to make sure that it does not
+      contain '.' as it will throw ember off
+    */
+    const normalizedUrl = normalizeURL(url);
+    const cleanedUrl = cleanURL(normalizedUrl);
 
-    proxy = WebsocketProxy.create({
-      content: this,
-      protocols: protocols,
-      socket: new WebSocket(this.normalizeURL(url), protocols)
-    });
+    /*
 
-    // If there is an existing socket in place we simply update the websocket object and not
-    // the whole proxy as we dont want to destroy the previous listeners.
-    var existingSocket = this.findSocketInCache(this.get('sockets'), url);
-    if(existingSocket) {
-      existingSocket.socket.socket = proxy.socket;
-      return existingSocket.socket;
-    }
-    else {
-      this.get('sockets').pushObject({
-        url: proxy.socket.url,
-        socket: proxy
-      });
+    */
+    const existingProxy = get(this, `sockets.${cleanedUrl}`);
+
+    if (existingProxy && this.isWebSocketOpen(existingProxy.socket)) {
+      return existingProxy;
     }
 
-    return proxy;
+    /*
+      we can get to this place if the websocket has been closed and we are trying to reopen
+      or we are creating a proxy for the first time
+    */
+    const newWebSocket = this.createSocket(normalizedUrl, protocols);
+
+    if (existingProxy) {
+      /*
+        If there is an existing socket in place we simply update the websocket object and not
+        the whole proxy as we dont want to destroy the previous listeners.
+      */
+      existingProxy.socket = newWebSocket;
+      return existingProxy;
+    }
+
+    const newProxy = this.createProxy(newWebSocket, protocols);
+
+    set(this, `sockets.${cleanedUrl}`, newProxy);
+
+    return newProxy;
   },
 
-  /*
-  * closeSocketFor closes the socket for a given url.
-  */
   closeSocketFor(url) {
-    var filteredSockets = [];
-
-    forEach.call(this.get('sockets'), item => {
-      if(item.url === this.normalizeURL(url)) {
-        item.socket.close();
-      }
-      else {
-        filteredSockets.push(item);
-      }
-    });
-
-    this.set('sockets', Ember.A(filteredSockets));
+    const cleanedUrl = cleanURL(normalizeURL(url));
+    get(this, `sockets.${cleanedUrl}`).socket.close();
   },
 
-  /*
-  * The native websocket object will transform urls without a pathname to have just a /.
-  * As an example: ws://localhost:8080 would actually be ws://localhost:8080/ but ws://example.com/foo would not
-  * change. This function does this transformation to stay inline with the native websocket implementation.
-  */
-  normalizeURL(url) {
-    var parsedUrl = new URI(url);
-
-    if(parsedUrl.path() === '/' && url.slice(-1) !== '/') {
-      return url + '/';
-    }
-
-    return url;
+  isWebSocketOpen(websocket) {
+    return websocket.readyState !== WebSocket.CLOSED;
   },
 
-  websocketIsNotClosed(websocket) {
-    return websocket.socket.readyState !== window.WebSocket.CLOSED;
+  createSocket(url, options) {
+    return new WebSocket(url, options);
   },
 
-  /*
-  * Returns the socket object from the cache if one matches the url else undefined
-  */
-  findSocketInCache(socketsCache, url) {
-    var cachedResults = filter.call(socketsCache, websocket => {
-      return websocket['url'] === this.normalizeURL(url);
-    });
-
-    if(cachedResults.length > 0) {
-      return cachedResults[0];
-    }
+  createProxy(socket, protocols) {
+    return WebsocketProxy.create({ content: this, protocols, socket });
   }
 });

@@ -2,27 +2,23 @@ import Ember from 'ember';
 import { module, test } from 'qunit';
 import SocketsService from 'dummy/services/websockets';
 
-var component;
-var ConsumerComponent;
-var originalWebSocket;
-var mockServerFoo;
-var mockServerBar;
+let component;
+let ConsumerComponent;
+let originalWebSocket;
+let mockServer;
+let service;
 
 module('Sockets Service - closeSocketFor', {
   setup() {
     originalWebSocket = window.WebSocket;
-    window.WebSocket  = MockSocket;
+    window.WebSocket = window.MockWebSocket;
 
-    var service       = SocketsService.create();
-    [mockServerFoo, mockServerBar] = [new MockServer('ws://localhost:7000/'), new MockServer('ws://localhost:7001/')]; // jshint ignore:line
+    service = SocketsService.create();
+    mockServer = new window.MockServer('ws://example.com:7000/');
 
     ConsumerComponent = Ember.Component.extend({
       socketService: service,
-      socket: null,
-      willDestroy() {
-        this.socketService.closeSocketFor('ws://localhost:7000/');
-        this.socketService.closeSocketFor('ws://localhost:7001/');
-      }
+      socket: null
     });
   },
   teardown() {
@@ -30,34 +26,32 @@ module('Sockets Service - closeSocketFor', {
 
     Ember.run(() => {
       component.destroy();
-      mockServerFoo.close();
-      mockServerBar.close();
+      service.destroy();
+      mockServer.close();
     });
   }
 });
 
 test('that closeSocketFor works correctly', assert => {
   var done = assert.async();
-  assert.expect(5);
+  assert.expect(1);
 
   component = ConsumerComponent.extend({
     init() {
-      this._super.apply(this, arguments);
-      var socketService = this.socketService;
+      this._super(...arguments);
+      const socketService = this.socketService.socketFor('ws://example.com:7000/');
 
-      assert.equal(socketService.sockets.length, 0);
-      socketService.socketFor('ws://localhost:7000/');
-      assert.equal(socketService.sockets.length, 1);
+      socketService.on('open', this.myOpenFunction, this);
+      socketService.on('close', this.myCloseFunction, this);
+    },
 
-      socketService.socketFor('ws://localhost:7001/');
-      assert.equal(socketService.sockets.length, 2);
+    myOpenFunction() {
+      const socketService = this.socketService;
+      socketService.closeSocketFor('ws://example.com:7000/');
+    },
 
-      socketService.closeSocketFor('ws://localhost:7000/');
-      assert.equal(socketService.sockets.length, 1);
-
-      socketService.closeSocketFor('ws://localhost:7001/');
-      assert.equal(socketService.sockets.length, 0);
-
+    myCloseFunction() {
+      assert.ok(true);
       done();
     }
   }).create();
